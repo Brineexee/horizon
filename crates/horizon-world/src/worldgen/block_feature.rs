@@ -17,8 +17,34 @@ use std::{
 /// Block states by block name and by tag name ([`FeatureBlockBindings::bind_tags`]).
 pub type BoundBlockTags = (
     Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
-    Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
+    Arc<BoundTags>,
 );
+
+/// Block tags' states by tag name, each bound the first time it is read: of
+/// vanilla's 300 block tags (406,779 states in all), world generation reads a
+/// few dozen. A tag's blocks are checked when it is made, so binding it later
+/// cannot fail; once bound, reading it takes no lock.
+pub struct BoundTags {
+    blocks: Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
+    tags: BTreeMap<String, (Vec<String>, std::sync::OnceLock<Arc<BTreeSet<BlockStateId>>>)>,
+}
+impl BoundTags {
+    /// The states of the tag `name`, bound on first use.
+    pub fn get<Q: Ord + ?Sized>(&self, name: &Q) -> Option<&Arc<BTreeSet<BlockStateId>>>
+    where
+        String: std::borrow::Borrow<Q>,
+    {
+        let (blocks, states) = self.tags.get(name)?;
+        Some(states.get_or_init(|| {
+            Arc::new(
+                blocks
+                    .iter()
+                    .flat_map(|block| self.blocks[block].iter().copied())
+                    .collect(),
+            )
+        }))
+    }
+}
 pub struct FeatureBlockBindings<'r> {
     registry: &'r BlockRegistry,
     pub(crate) simple_blocks: Option<(
@@ -33,7 +59,7 @@ pub struct FeatureBlockBindings<'r> {
     pub(crate) fluids: super::fluid_predicate::FluidPredicateBindings,
     pub(crate) codec: BlockStateJsonCodec<'r>,
     pub(crate) blocks: Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
-    pub(crate) tags: Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
+    pub(crate) tags: Arc<BoundTags>,
     pub(crate) air: [BlockStateId; 3],
     tree_blocks: std::sync::OnceLock<Arc<super::tree_blocks::TreeBlocks>>,
     pub(crate) structures: Option<Arc<super::structure::StructureResources>>,
@@ -150,29 +176,36 @@ impl<'r> FeatureBlockBindings<'r> {
         }
         let mut bound_tags = BTreeMap::new();
         for (name, entries) in tags {
-            let mut states = BTreeSet::new();
+            let mut tag_blocks = Vec::with_capacity(entries.len());
             for name in entries {
-                states.extend(
-                    blocks
-                        .get(&identifier(name)?)
-                        .ok_or_else(|| DecodeError::Registry(format!("unknown block {name}")))?,
-                );
+                let block = identifier(name)?;
+                if !blocks.contains_key(&block) {
+                    return Err(DecodeError::Registry(format!("unknown block {name}")));
+                }
+                tag_blocks.push(block);
             }
             if bound_tags
-                .insert(super::tags::identifier(name)?, Arc::new(states))
+                .insert(
+                    super::tags::identifier(name)?,
+                    (tag_blocks, std::sync::OnceLock::new()),
+                )
                 .is_some()
             {
                 return Err(DecodeError::Field("duplicate block tag"));
             }
         }
+        let blocks: Arc<BTreeMap<_, _>> = Arc::new(
+            blocks
+                .into_iter()
+                .map(|(name, states)| (name, Arc::new(states)))
+                .collect(),
+        );
         Ok((
-            Arc::new(
-                blocks
-                    .into_iter()
-                    .map(|(name, states)| (name, Arc::new(states)))
-                    .collect(),
-            ),
-            Arc::new(bound_tags),
+            blocks.clone(),
+            Arc::new(BoundTags {
+                blocks,
+                tags: bound_tags,
+            }),
         ))
     }
     /// [`FeatureBlockBindings::with_tags`] over tags already bound by
