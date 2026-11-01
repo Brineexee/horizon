@@ -26,7 +26,13 @@ pub type BoundBlockTags = (
 /// cannot fail; once bound, reading it takes no lock.
 pub struct BoundTags {
     blocks: Arc<BTreeMap<String, Arc<BTreeSet<BlockStateId>>>>,
-    tags: BTreeMap<String, (Vec<String>, std::sync::OnceLock<Arc<BTreeSet<BlockStateId>>>)>,
+    tags: BTreeMap<
+        String,
+        (
+            Vec<String>,
+            std::sync::OnceLock<Arc<BTreeSet<BlockStateId>>>,
+        ),
+    >,
 }
 impl BoundTags {
     /// The states of the tag `name`, bound on first use.
@@ -39,7 +45,12 @@ impl BoundTags {
             Arc::new(
                 blocks
                     .iter()
-                    .flat_map(|block| self.blocks[block].iter().copied())
+                    .flat_map(|block| {
+                        self.blocks
+                            .get::<str>(block)
+                            .into_iter()
+                            .flat_map(|states| states.iter().copied())
+                    })
                     .collect(),
             )
         }))

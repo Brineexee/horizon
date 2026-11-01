@@ -21,10 +21,7 @@ use horizon_core::{
         WorldGenTickContainers,
     },
 };
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 struct RegionBlockQueries {
     fluids: super::fluid_predicate::FluidPredicateBindings,
